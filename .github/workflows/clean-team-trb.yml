@@ -1,3 +1,4 @@
+# Registered workflow trigger refresh
 name: Isolated resumable team rebound build
 
 on:
