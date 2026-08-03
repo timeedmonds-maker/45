@@ -6,6 +6,8 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/clean-team-trb.yml'
+  pull_request_target:
+    types: [opened, synchronize, reopened]
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
