@@ -1,0 +1,10 @@
+{
+  "season": "2000-01",
+  "team_id": 1610612737,
+  "attempts": 1,
+  "updated_at_utc": "2026-08-03T06:38:01.600283+00:00",
+  "timed_out": true,
+  "last_exit_code": null,
+  "last_elapsed_seconds": 480.005,
+  "last_error": "Timed out after 480 seconds: Command '['/opt/hostedtoolcache/Python/3.12.13/x64/bin/python', '/home/runner/work/45/45/source/team_trb_all_players/slim_cached_batch.py']' timed out after 479.999988799 seconds"
+}
