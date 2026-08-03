@@ -1,0 +1,35 @@
+name: Dispatch isolated team rebound cycle
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  issues: write
+  contents: read
+
+jobs:
+  dispatch:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.issue.number == 1 && contains(github.event.comment.body, '/run-clean-team-trb')) }}
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch the isolated extraction workflow directly
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'clean-team-trb.yml',
+              ref: 'main'
+            });
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: 5161413618,
+              body: `Direct dispatcher run ${context.runId} launched an isolated extraction cycle.`
+            });
