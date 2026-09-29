@@ -13,6 +13,7 @@ This file never modifies the frozen HoopVision v1.3 release.
 import argparse
 import json
 from pathlib import Path
+import sys
 
 import cv2
 import numpy as np
@@ -22,6 +23,7 @@ from freeze_spin.prepare_v32_layered_scene import decode_indices, find_clip, saf
 from freeze_spin.v13_camera import (
     RIM_Y,
     RIM_Z,
+    COURT_VERTICES,
     best_rim,
     court_infer,
     detections,
@@ -77,6 +79,7 @@ def main() -> None:
     ap.add_argument("--detector-onnx", type=Path, required=True)
     ap.add_argument("--object-eval-src", type=Path, required=True)
     ap.add_argument("--court-model", type=Path, required=True)
+    ap.add_argument("--nbacv-src", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--max-degree", type=float, default=25.0)
     ap.add_argument("--orbit-frames", type=int, default=61)
@@ -86,6 +89,13 @@ def main() -> None:
 
     court_model = YOLO(str(args.court_model))
     detector = make_detector(args.detector_onnx, args.object_eval_src)
+
+    # Use the exact frozen v1.3 court calibration implementation rather than a
+    # one-frame approximation.  This preserves its temporal pooling, RANSAC,
+    # plausibility gates and scale-outlier rejection.
+    sys.path.insert(0, str(args.nbacv_src))
+    import nbacv.court as nbacv_court
+    nbacv_court.VERTICES_CM = COURT_VERTICES.copy()
 
     clips = {}
     decoded = {}
@@ -103,9 +113,40 @@ def main() -> None:
         nominal = decoded[label][NOMINAL[label]]
         nominal_images[label] = nominal
 
+        # Run the genuine frozen v1.3 calibration on a local real-frame
+        # temporal window.  The accepted floor homography is then promoted to
+        # a full 3-D camera using the regulation rim as non-coplanar evidence.
+        kp_window = {}
+        good_size = 640
+        for frame_index in indices:
+            fr = decoded[label][frame_index]
+            kp = None
+            for size in [good_size] + [s for s in (640, 960, 1280) if s != good_size]:
+                cand = nbacv_court._court_infer(court_model, fr, size, "cpu")
+                if cand is not None and int((cand[1] >= 0.5).sum()) >= 6:
+                    kp = cand
+                    good_size = size
+                    break
+                if kp is None:
+                    kp = cand
+            kp_window[frame_index] = kp
+
+        calibration = nbacv_court.calibrate_video(
+            kp_window,
+            window=2,
+            frame_hw=(540, 960),
+        )
+        floor_rec = calibration.get(NOMINAL[label], {})
+        if floor_rec.get("H") is None:
+            raise RuntimeError(
+                f"{label}: frozen v1.3 floor calibration failed at nominal "
+                f"frame {NOMINAL[label]}: {floor_rec}"
+            )
+
         court = court_infer(court_model, nominal)
         if court is None:
             raise RuntimeError(f"{label}: no v1.3 court detection")
+        court["v13_floor_calibration"] = floor_rec
         court_obs[label] = court
 
         det_rows = detections(detector, nominal)
@@ -114,7 +155,12 @@ def main() -> None:
         if rim is None:
             raise RuntimeError(f"{label}: v1.3 RF-DETR did not detect rim")
 
-        cam, roots = solve_camera(label, court, rim["xyxy"])
+        cam, roots = solve_camera(
+            label,
+            court,
+            rim["xyxy"],
+            H_i2w_override=np.asarray(floor_rec["H"], dtype=np.float64),
+        )
         cam["label"] = label
         cam["rim_box"] = rim["xyxy"]
         cameras[label] = cam
