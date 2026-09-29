@@ -1,0 +1,5 @@
+run=adams_jazz_freeze_swivel_v13_1
+game_id=0022500301
+event_num=489
+minimum_synchronized_cameras=4
+output=3840x2160
