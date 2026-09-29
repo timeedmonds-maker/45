@@ -40,6 +40,8 @@ jobs:
           git clone -q https://github.com/ortizeg/object-detection-eval.git /tmp/object-detection-eval
           git -C /tmp/object-detection-eval checkout -q bcf6279073af042c3a5084a041f6c5d8e71e6af1
           python -m pip install --quiet -e /tmp/object-detection-eval
+          git clone -q https://github.com/cyrushadavi1/nba_video_analysis_v2.git /tmp/nbacv
+          git -C /tmp/nbacv checkout -q b7b115c7ace11348512c0ebfb679b48cad35f1fb
           python -m py_compile \
             freeze_spin/v13_camera.py \
             freeze_spin/v13_sync.py \
@@ -76,6 +78,7 @@ jobs:
             --detector-onnx models/rfdetr_m_640.onnx \
             --object-eval-src /tmp/object-detection-eval/src \
             --court-model models/court_yolo11m_pose.pt \
+            --nbacv-src /tmp/nbacv/src \
             --out v13_out \
             --max-degree 25 \
             --orbit-frames 61 \
