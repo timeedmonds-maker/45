@@ -353,3 +353,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# Runner trigger: public Actions execute the frozen v1.3 downstream proof.
