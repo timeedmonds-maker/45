@@ -1,0 +1,59 @@
+{
+  "schema_version": 4,
+  "game_id": "0022500301",
+  "event_id": 489,
+  "date": "2025-11-30",
+  "camera_label": "Broadcast",
+  "image": "A_Broadcast_9.194613s_frame0276.png",
+  "freeze_lock": {
+    "authority_camera": "Right Slash",
+    "chooser_option": "C",
+    "right_slash_local_time": 8.275733,
+    "right_slash_decoded_frame_index": 248,
+    "broadcast_synchronized_time": 9.194613,
+    "broadcast_decoded_frame_index": 276
+  },
+  "annotation_policy": "v86 cumulative native-pixel evidence audit. v81 three-point and v82 free-throw semicircle corrections are preserved. The two lane-boundary evidence families are re-audited against the immutable native Frame C using local cross-line RGB profiles and full-resolution visual verification. Samples are moved only to the visible painted-stripe centre; no solver residuals, cross-camera transfer, player/ball geometry or generated pixels are used. One lane_positive_y sample at [612,363] is removed because the regulation stripe is occluded by a player at that pixel and therefore is not observable.",
+  "observations_px": {
+    "three_point_arc": [[92,324],[90,340],[96,357],[106,374],[120,387],[135,398],[153,409],[172,419],[192,427],[212,434],[261,449],[291,456],[321,462],[351,468],[381,472],[410,476]],
+    "free_throw_front_semicircle": [[278,307],[260,309],[240,312],[220,317],[203,323],[192,331],[183,340],[182,347],[188,358],[198,365],[212,370],[230,375],[250,378],[270,379],[290,380],[310,380],[330,378],[340,379]],
+    "free_throw_line": [[267,296],[276,306],[285,316],[294,326],[303,336],[312,346],[321,356],[330,366],[339,376],[348,386],[351,390]],
+    "lane_negative_y": [[267,297],[300,292],[335,289],[370,285],[405,281],[435,279]],
+    "lane_positive_y": [[351,390],[385,387],[420,383],[539,370],[575,367],[646,357],[685,353],[718,349]]
+  },
+  "held_out_indices": {
+    "three_point_arc": [2,5,8,11,14],
+    "free_throw_front_semicircle": [1,4,7,10,13,16],
+    "free_throw_line": [1,4,7,9],
+    "lane_negative_y": [1,4],
+    "lane_positive_y": [1,4,6]
+  },
+  "regulation_geometry": {
+    "coordinate_system": "backboard face x=0; +x into court; y=0 basket centre; floor z=0",
+    "units": "cm",
+    "note": "Solver must apply the v83 NBA 2-inch painted-line centre convention: outside dimensions minus 1 inch for zero-width line-centre loci."
+  },
+  "seed_only_correspondences": {
+    "note": "Approximate lane corners initialize the nonlinear solver only; excluded from all residuals and gates.",
+    "world_cm": [[457.2,-243.84],[457.2,243.84],[-121.92,-243.84],[-121.92,243.84]],
+    "image_px": [[267,296],[351,390],[640,239],[718,352]]
+  },
+  "evidence_correction_v86": {
+    "scope": "lane boundaries only; all v81/v82 corrections preserved",
+    "lane_negative_y": {
+      "previous_px": [[267,296],[300,292],[335,288],[370,283],[405,278],[435,274]],
+      "corrected_px": [[267,297],[300,292],[335,289],[370,285],[405,281],[435,279]],
+      "per_point_shift_px": [1.0,0.0,1.0,2.0,3.0,5.0],
+      "image_evidence": "At increasing x, the stored samples drift from the visible cyan stripe into the timber. The [435,274] sample is unambiguously on timber; the stripe centre is approximately y=279."
+    },
+    "lane_positive_y": {
+      "previous_px": [[351,390],[385,388],[420,384],[539,371],[575,367],[612,363],[646,359],[685,355],[718,352]],
+      "corrected_px": [[351,390],[385,387],[420,383],[539,370],[575,367],[646,357],[685,353],[718,349]],
+      "per_retained_point_shift_px": [0.0,1.0,1.0,1.0,0.0,2.0,2.0,3.0],
+      "removed_observation": {"pixel": [612,363], "reason": "player occlusion covers the lane stripe at this x; no source-visible paint centre can be annotated"},
+      "held_out_mapping_note": "Original held-out source indices 1,4,7 map to corrected-list indices 1,4,6 after removal of original training index 5."
+    },
+    "placement_method": "native RGB transition/stripe-centre audit plus visual verification; independent of solver output"
+  },
+  "notes": "v86 is discovery evidence only until strict robustness is rerun. The NBA 2-inch line-width world-centre correction from v83/v84 remains required when solving this evidence."
+}
