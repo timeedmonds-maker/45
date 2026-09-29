@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "game_id": "0022500301",
+  "event_id": 489,
+  "camera_label": "Broadcast",
+  "image": "A_Broadcast_9.194613s_frame0276.png",
+  "purpose": "Independent held-out basket-depth validation for the v87 Broadcast pinhole camera. No rim pixel in this file is used to fit the v87 camera.",
+  "annotation_policy": "Native 960x540 immutable Frame C only. Samples trace the source-visible upper/inside orange rim contour from left to right. The orange ball at smaller x and the rim support/bracket at larger x are excluded. Placement is from direct source-pixel inspection only; no v87 projection, solver residual, cross-camera transfer, generated pixels, player geometry or ball geometry is used.",
+  "rim_contour_samples_px": [[550,124],[552,121],[554,121],[556,121],[558,121],[560,121],[562,121],[564,121],[566,121],[568,121],[570,121],[572,121],[574,121],[576,123],[578,123]],
+  "metric_model": {
+    "coordinate_system": "backboard face x=0; +x into court; y=0 basket centre; floor z=0",
+    "units": "cm",
+    "rim_inside_diameter_in": 18.0,
+    "rim_inside_radius_in": 9.0,
+    "rim_center_from_backboard_face_in": 15.0,
+    "rim_upper_edge_height_ft": 10.0,
+    "note": "The regulation 18-inch inside-edge circle at the 10-foot upper-edge plane is used as the independent metric reference. The image contour is intentionally not used as a fitted residual; v88 measures nearest image distance only. At this source resolution the metal-tube contour is not claimed to support sub-pixel tube-thickness modelling."
+  },
+  "independence": {
+    "used_by_v87_fit": false,
+    "used_by_v87_initialization": false,
+    "used_by_floor_evidence_audit": false,
+    "used_by_target_line_evidence_audit": false
+  },
+  "guardrail": "A good rim projection validates the event camera's image-space basket geometry but does not, by itself, prove that focal length, principal point and physical camera centre are uniquely identifiable. Physical-centre permission remains false unless the inherited 75 cm perturbation-stability gate is independently satisfied."
+}
