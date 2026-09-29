@@ -1,0 +1,9 @@
+{
+  "game_id":"0022500301","event_id":489,"camera_label":"Broadcast",
+  "observed_line_samples_px":{
+    "target_top":[[582,92],[583,92],[584,93],[585,93],[586,94],[587,94],[588,95],[589,96],[590,96],[591,97],[592,97],[593,97],[594,98]],
+    "target_left":[[581,96],[581,100],[581,104],[581,108],[581,112],[581,116]],
+    "target_right":[[595,102],[595,106],[595,110],[594,114],[594,118],[594,120]]
+  },
+  "provenance":"Native-pixel white target stripe centreline observations from legacy v87."
+}
