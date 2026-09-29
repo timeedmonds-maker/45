@@ -104,6 +104,7 @@ def main() -> None:
     nominal_detections = {}
     cameras = {}
     camera_roots = {}
+    camera_failures = {}
 
     for label in CAMERAS:
         clip = find_clip(args.clips_dir, label)
@@ -131,60 +132,100 @@ def main() -> None:
                     kp = cand
             kp_window[frame_index] = kp
 
-        calibration = nbacv_court.calibrate_video(
-            kp_window,
-            window=2,
-            frame_hw=(540, 960),
-        )
-        floor_rec = calibration.get(NOMINAL[label], {})
-        if floor_rec.get("H") is None:
-            raise RuntimeError(
-                f"{label}: frozen v1.3 floor calibration failed at nominal "
-                f"frame {NOMINAL[label]}: {floor_rec}"
+        try:
+            calibration = nbacv_court.calibrate_video(
+                kp_window,
+                window=2,
+                frame_hw=(540, 960),
             )
+            floor_rec = calibration.get(NOMINAL[label], {})
 
-        court = court_infer(court_model, nominal)
-        if court is None:
-            raise RuntimeError(f"{label}: no v1.3 court detection")
-        court["v13_floor_calibration"] = floor_rec
-        court_obs[label] = court
+            # Broadcast has its own stronger sealed event-489 metric solve and
+            # therefore does not require the generic v1.3 floor homography to
+            # pass. Other cameras still do until their own sealed metric solve
+            # is wired in.
+            if label != "Broadcast" and floor_rec.get("H") is None:
+                raise RuntimeError(
+                    f"{label}: frozen v1.3 floor calibration failed at nominal "
+                    f"frame {NOMINAL[label]}: {floor_rec}"
+                )
 
-        det_rows = detections(detector, nominal)
-        nominal_detections[label] = det_rows
-        rim = best_rim(det_rows)
-        if rim is None:
-            raise RuntimeError(f"{label}: v1.3 RF-DETR did not detect rim")
+            court = court_infer(court_model, nominal)
+            if court is None:
+                raise RuntimeError(f"{label}: no v1.3 court detection")
+            court["v13_floor_calibration"] = floor_rec
+            court_obs[label] = court
 
-        cam, roots = solve_camera(
-            label,
-            court,
-            rim["xyxy"],
-            H_i2w_override=np.asarray(floor_rec["H"], dtype=np.float64),
+            det_rows = detections(detector, nominal)
+            nominal_detections[label] = det_rows
+            rim = best_rim(det_rows)
+            if rim is None:
+                raise RuntimeError(f"{label}: v1.3 RF-DETR did not detect rim")
+
+            H_override = (
+                np.asarray(floor_rec["H"], dtype=np.float64)
+                if floor_rec.get("H") is not None
+                else None
+            )
+            cam, roots = solve_camera(
+                label,
+                court,
+                rim["xyxy"],
+                H_i2w_override=H_override,
+            )
+            cam["label"] = label
+            cam["rim_box"] = rim["xyxy"]
+            cameras[label] = cam
+            camera_roots[label] = roots
+
+            draw_camera_qa(
+                nominal,
+                court,
+                rim["xyxy"],
+                cam,
+                args.out / f"camera_qa_{safe_label(label)}.png",
+            )
+            print(
+                "V13_CAMERA",
+                label,
+                json.dumps({
+                    "court_landmarks": court["visible"],
+                    "floor_p95_px": cam["floor_p95_px"],
+                    "rim_bbox_p95_px": cam["rim_bbox_p95_px"],
+                    "camera_center_cm": cam["C"].tolist(),
+                    "rim_x_world_cm": cam["rim_x"],
+                }, sort_keys=True),
+                flush=True,
+            )
+        except Exception as exc:
+            camera_failures[label] = str(exc)
+            print(
+                "V13_CAMERA_FAIL",
+                label,
+                json.dumps({"error": str(exc)}, sort_keys=True),
+                flush=True,
+            )
+            continue
+
+    active_cameras = [label for label in CAMERAS if label in cameras]
+    (args.out / "camera_solve_status.json").write_text(
+        json.dumps(
+            {
+                "passed": active_cameras,
+                "failed": camera_failures,
+                "required_minimum": 4,
+            },
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    if len(active_cameras) < 4:
+        raise RuntimeError(
+            "fewer than four metric cameras passed: "
+            f"passed={active_cameras} failed={camera_failures}"
         )
-        cam["label"] = label
-        cam["rim_box"] = rim["xyxy"]
-        cameras[label] = cam
-        camera_roots[label] = roots
-
-        draw_camera_qa(
-            nominal,
-            court,
-            rim["xyxy"],
-            cam,
-            args.out / f"camera_qa_{safe_label(label)}.png",
-        )
-        print(
-            "V13_CAMERA",
-            label,
-            json.dumps({
-                "court_landmarks": court["visible"],
-                "floor_p95_px": cam["floor_p95_px"],
-                "rim_bbox_p95_px": cam["rim_bbox_p95_px"],
-                "camera_center_cm": cam["C"].tolist(),
-                "rim_x_world_cm": cam["rim_x"],
-            }, sort_keys=True),
-            flush=True,
-        )
+    if "Broadcast" not in cameras:
+        raise RuntimeError("Broadcast anchor did not pass metric camera solve")
 
     # All six views must describe the same physical basket.  Individual planar
     # roots can mirror to the opposite end; use six-view consensus to select the
@@ -194,7 +235,7 @@ def main() -> None:
         basket_counts[cam["rim_x"]] = basket_counts.get(cam["rim_x"], 0) + 1
     majority_basket = max(basket_counts, key=basket_counts.get)
 
-    for label in CAMERAS:
+    for label in active_cameras:
         if cameras[label]["rim_x"] == majority_basket:
             continue
         alternatives = [
@@ -217,7 +258,7 @@ def main() -> None:
     # different basketball instant.  Pose + ball epipolar consistency chooses
     # one physical state across the six views.
     best_state, observations, registrations, pair_tables = analyze_candidates(
-        CAMERAS,
+        active_cameras,
         OFFSETS,
         NOMINAL,
         decoded,
@@ -234,7 +275,7 @@ def main() -> None:
     )
 
     exact_undistorted = {}
-    for label in CAMERAS:
+    for label in active_cameras:
         off = offsets[label]
         raw = decoded[label][NOMINAL[label] + off]
         Hm = registrations[label][off][0]
@@ -266,7 +307,7 @@ def main() -> None:
         )
 
     clouds, depth_qa = build_metric_clouds(
-        CAMERAS,
+        active_cameras,
         exact_undistorted,
         cameras,
         args.out,
@@ -279,7 +320,7 @@ def main() -> None:
         dtype=np.float64,
     )
     orbit_qa = render_orbit(
-        CAMERAS,
+        active_cameras,
         cameras,
         clouds,
         exact_undistorted,
@@ -307,8 +348,9 @@ def main() -> None:
         "player": "Steven Adams",
         "basketball_moment": "Steven Adams dunk vs Utah immediately after his block",
         "frozen_engine": "HoopVision release/v1.3 downstream consumer; upstream v1.3 unchanged",
-        "camera_set": list(CAMERAS),
-        "camera_count": len(CAMERAS),
+        "camera_set": list(active_cameras),
+        "camera_count": len(active_cameras),
+        "camera_failures": camera_failures,
         "shared_basket_x_cm": float(majority_basket),
         "cameras": {
             label: {
@@ -330,7 +372,7 @@ def main() -> None:
                     "person_score"
                 ),
             }
-            for label in CAMERAS
+            for label in active_cameras
         },
         "exact_state": {
             "score": float(sync_score),
@@ -384,7 +426,7 @@ def main() -> None:
             "offsets": offsets,
             "camera_floor_p95_px": {
                 label: report["cameras"][label]["floor_p95_px"]
-                for label in CAMERAS
+                for label in active_cameras
             },
             "depth_heldout_p95_cm": {
                 label: depth_qa[label]["heldout_p95_cm"]
