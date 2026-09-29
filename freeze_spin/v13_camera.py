@@ -63,6 +63,31 @@ COURT_VERTICES = np.asarray([
     (COURT_L, COURT_W),
 ], dtype=np.float64)
 
+# Previously hard-gated Adams/Jazz game-level metric centres. These are used
+# only as centre priors for the three already-proven physical cameras; v1.3
+# still solves the event optical state (orientation/focal/crop/distortion).
+_ACCEPTED_BASKET_LOCAL_CENTRES = {
+    "Left Above Rim": np.asarray([1954.0944213029006, -20.657870280048282, 370.3129555117168], dtype=np.float64),
+    "Right Above Rim": np.asarray([-10.706171965705735, -0.2250433572710421, 566.0472369503494], dtype=np.float64),
+    "Broadcast": np.asarray([39.513155402289954 * 30.48, 96.76737963404346 * 30.48, 33.09376291010151 * 30.48], dtype=np.float64),
+}
+_BOARD_TO_NEAR_BASELINE_CM = RIM_BASELINE - 15.0 * 2.54
+_BOARD_TO_FAR_BASELINE_CM = COURT_L - _BOARD_TO_NEAR_BASELINE_CM
+
+
+def accepted_center_candidates(label: str, rim_x: float) -> list[np.ndarray]:
+    local = _ACCEPTED_BASKET_LOCAL_CENTRES.get(label)
+    if local is None:
+        return []
+    rows = []
+    for y_sign in (1.0, -1.0):
+        if abs(rim_x - RIM_XS[0]) < 1.0:
+            x = _BOARD_TO_NEAR_BASELINE_CM + local[0]
+        else:
+            x = _BOARD_TO_FAR_BASELINE_CM - local[0]
+        rows.append(np.asarray([x, RIM_Y + y_sign * local[1], local[2]], dtype=np.float64))
+    return rows
+
 
 def K_matrix(f: float, cx: float, cy: float) -> np.ndarray:
     return np.asarray([[f, 0.0, cx], [0.0, f, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
@@ -287,10 +312,26 @@ def _camera_residual(
 
 def solve_camera(label: str, court: dict, rim_box: np.ndarray):
     xy, cf = court["xy"], court["conf"]
-    sel = (cf >= 0.45) & (xy[:, 0] > 1) & (xy[:, 1] > 1)
-    if int(sel.sum()) < 6:
-        raise RuntimeError(f"{label}: only {int(sel.sum())} reliable v1.3 court landmarks")
+    raw_sel = (cf >= 0.45) & (xy[:, 0] > 1) & (xy[:, 1] > 1)
+    if int(raw_sel.sum()) < 6:
+        raise RuntimeError(f"{label}: only {int(raw_sel.sum())} reliable v1.3 court landmarks")
 
+    # Reuse the frozen v1.3 RANSAC principle before asking a 3-D camera to
+    # explain the observations. A single bad semantic landmark can otherwise
+    # drag a physically valid camera hundreds of pixels away.
+    src = xy[raw_sel].astype(np.float64)
+    dst = COURT_VERTICES[raw_sel].astype(np.float64)
+    H_i2w, inlier = cv2.findHomography(src, dst, cv2.RANSAC, 10.0)
+    if H_i2w is None or inlier is None:
+        raise RuntimeError(f"{label}: v1.3 court RANSAC failed")
+    keep_local = inlier.ravel().astype(bool)
+    raw_ids = np.where(raw_sel)[0]
+    keep_ids = raw_ids[keep_local]
+    if len(keep_ids) < 6:
+        raise RuntimeError(f"{label}: only {len(keep_ids)} v1.3 court RANSAC inliers")
+
+    sel = np.zeros(len(xy), dtype=bool)
+    sel[keep_ids] = True
     floor_world = np.column_stack([
         COURT_VERTICES[sel],
         np.zeros(int(sel.sum())),
@@ -320,7 +361,72 @@ def solve_camera(label: str, court: dict, rim_box: np.ndarray):
     ]
 
     roots = []
-    for rim_x in RIM_XS:
+
+    # For the three cameras already proved metrically in the earlier Adams/Jazz
+    # work, do not throw away that evidence. Lock only the physical optical
+    # centre and re-solve the current v1.3 event optical state. This is exactly
+    # the PTZ/focal/crop hierarchy established by the old hard-gated proofs.
+    accepted = label in _ACCEPTED_BASKET_LOCAL_CENTRES
+    if accepted:
+        for rim_x in RIM_XS:
+            for C_fixed in accepted_center_candidates(label, rim_x):
+                for seed in seeds:
+                    q0 = np.r_[seed[:3], seed[6:]]
+                    qlo = np.r_[lo[:3], lo[6:]]
+                    qhi = np.r_[hi[:3], hi[6:]]
+
+                    def expand(q):
+                        return np.r_[q[:3], C_fixed, q[3:]]
+
+                    try:
+                        fit = least_squares(
+                            lambda q: _camera_residual(
+                                expand(q), floor_world, floor_image, rim_box, rim_x
+                            ),
+                            np.minimum(np.maximum(q0, qlo + 1e-7), qhi - 1e-7),
+                            bounds=(qlo, qhi),
+                            loss="soft_l1",
+                            f_scale=1.0,
+                            x_scale="jac",
+                            max_nfev=1200,
+                        )
+                    except Exception:
+                        continue
+                    xfit = expand(fit.x)
+                    uv, z, R, _ = project_points(xfit, floor_world)
+                    ru, rz, _, _ = project_points(xfit, rim_world(rim_x, 720))
+                    floor_e = np.linalg.norm(uv - floor_image, axis=1)
+                    pred_box = np.asarray([
+                        ru[:, 0].min(), ru[:, 1].min(),
+                        ru[:, 0].max(), ru[:, 1].max(),
+                    ])
+                    rim_e = np.abs(pred_box - rim_box)
+                    valid = bool(
+                        np.percentile(z, 10) > 10
+                        and np.percentile(rz, 10) > 10
+                        and 100 < C_fixed[2] < 9000
+                    )
+                    roots.append({
+                        "rim_x": float(rim_x),
+                        "x": xfit.copy(),
+                        "cost": float(fit.cost),
+                        "valid": valid,
+                        "floor_median_px": float(np.median(floor_e)),
+                        "floor_p95_px": float(np.percentile(floor_e, 95)),
+                        "rim_bbox_p95_px": float(np.percentile(rim_e, 95)),
+                        "visible_landmarks": int(sel.sum()),
+                        "raw_visible_landmarks": int(raw_sel.sum()),
+                        "court_ransac_inliers": int(sel.sum()),
+                        "R": R.copy(),
+                        "C": C_fixed.copy(),
+                        "K": K_matrix(math.exp(xfit[6]), xfit[7], xfit[8]),
+                        "dist": np.asarray([xfit[9], xfit[10], 0.0, 0.0, 0.0], dtype=np.float64),
+                        "center_source": "accepted_game_metric_center",
+                    })
+
+    # New camera families still get a true free-centre solve.
+    if not accepted:
+      for rim_x in RIM_XS:
         for seed in seeds:
             s = np.minimum(np.maximum(seed, lo + 1e-7), hi - 1e-7)
             try:
@@ -331,7 +437,7 @@ def solve_camera(label: str, court: dict, rim_box: np.ndarray):
                     loss="soft_l1",
                     f_scale=1.0,
                     x_scale="jac",
-                    max_nfev=900,
+                    max_nfev=1200,
                 )
             except Exception:
                 continue
@@ -361,10 +467,13 @@ def solve_camera(label: str, court: dict, rim_box: np.ndarray):
                 "floor_p95_px": float(np.percentile(floor_e, 95)),
                 "rim_bbox_p95_px": float(np.percentile(rim_e, 95)),
                 "visible_landmarks": int(sel.sum()),
+                "raw_visible_landmarks": int(raw_sel.sum()),
+                "court_ransac_inliers": int(sel.sum()),
                 "R": R.copy(),
                 "C": C.copy(),
                 "K": K_matrix(math.exp(fit.x[6]), fit.x[7], fit.x[8]),
                 "dist": np.asarray([fit.x[9], fit.x[10], 0.0, 0.0, 0.0], dtype=np.float64),
+                "center_source": "v1.3_free_center_solve",
             })
 
     roots = [r for r in roots if r["valid"]]
