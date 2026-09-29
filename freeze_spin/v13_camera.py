@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import sys
 from pathlib import Path
@@ -426,12 +427,158 @@ def homography_manifold_roots(
             })
     return rows
 
+
+def solve_broadcast_sealed_geometry() -> tuple[dict, list[dict]]:
+    """Recover the exact event-489 Broadcast camera from sealed source geometry.
+
+    The frozen v1.3 court homography is excellent for 2-D court coordinates but
+    is not itself a unique pinhole-camera calibration.  Broadcast already has
+    stronger event-specific evidence: native-pixel regulation floor curves,
+    three elevated target-stripe line families and a completely held-out rim
+    contour.  Re-run that strict solve here rather than trying to decompose the
+    tracking homography into a physical camera.
+    """
+    from freeze_spin import diagnose_broadcast_homography_conditioning_v85 as v85
+    from freeze_spin import solve_broadcast_direct_target_lines_v87 as v87
+    from freeze_spin import solve_frame_c_broadcast_floor_v44 as v44
+
+    root = Path(__file__).resolve().parent
+    floor_spec = json.loads(
+        (root / "adams_jazz_frame_c_broadcast_floor_v86.json").read_text()
+    )
+    target_spec = json.loads(
+        (root / "adams_jazz_broadcast_target_lines_v87.json").read_text()
+    )
+    rim_spec = json.loads(
+        (root / "adams_jazz_broadcast_rim_v88.json").read_text()
+    )
+    v85.patch_line_aware_geometry()
+
+    floor_train, floor_held = v44.split_groups(
+        floor_spec["observations_px"],
+        floor_spec["held_out_indices"],
+    )
+    target_obs = {
+        key: np.asarray(target_spec["observed_line_samples_px"][key], dtype=np.float64)
+        for key in v87.TARGET_KEYS
+    }
+
+    roots_local = []
+    for start in v87.pnp_starts(target_spec):
+        try:
+            p = v87.solve_warm(start, floor_train, target_obs, max_nfev=7000)
+        except Exception:
+            continue
+        data = v87.data_residual(p, floor_train, target_obs)
+        score = float(np.median(np.abs(data[:-8]))) if len(data) > 8 else float(np.median(np.abs(data)))
+        C_local = v87.camera_center(p)
+        _, q = v87.project3(p, np.vstack(list(v87.world_target_lines().values())))
+        if np.all(np.isfinite(p)) and np.all(np.isfinite(C_local)) and np.all(q[:, 2] > 20.0):
+            roots_local.append((score, p, C_local))
+    if not roots_local:
+        raise RuntimeError("Broadcast: sealed v87 solve produced no physical root")
+    roots_local.sort(key=lambda z: z[0])
+
+    board_x_global = RIM_BASELINE - 15.0 * 2.54
+    accepted_candidates = accepted_center_candidates("Broadcast", RIM_XS[0])
+
+    converted = []
+    for score, p, C_local in roots_local:
+        C_global = np.asarray([
+            board_x_global + C_local[0],
+            RIM_Y + C_local[1],
+            C_local[2],
+        ], dtype=np.float64)
+        floor_H = v87.floor_homography(p)
+        floor_m = v44.pixel_metrics(floor_H, floor_held, v44.dense_features())
+        floor_p95 = float(max(v["p95_px"] for v in floor_m.values()))
+        target_m = v87.target_metrics(p, target_obs)
+        target_p95 = float(max(v["p95_px"] for v in target_m.values()))
+
+        th = np.linspace(0.0, 2.0 * math.pi, 2001, endpoint=False)
+        rim_local = np.column_stack([
+            np.full_like(th, 15.0 * 2.54),
+            9.0 * 2.54 * np.cos(th),
+            np.full_like(th, RIM_Z),
+        ])
+        # v87 local rim circle uses x fixed at the distance from the board and
+        # y as the circular coordinate; rebuild it explicitly to keep the
+        # independent v88 validation separate from the fitted target lines.
+        # The physical rim is horizontal, so x and y must both vary:
+        rim_local[:, 0] = 15.0 * 2.54 + 9.0 * 2.54 * np.cos(th)
+        rim_local[:, 1] = 9.0 * 2.54 * np.sin(th)
+        ruv, _ = v87.project3(p, rim_local)
+        obs = np.asarray(rim_spec["rim_contour_samples_px"], dtype=np.float64)
+        rim_d = np.sqrt(np.sum((obs[:, None, :] - ruv[None, :, :]) ** 2, axis=2)).min(axis=1)
+        rim_p95 = float(np.percentile(rim_d, 95))
+
+        prior_shift = min(
+            (float(np.linalg.norm(C_global - z)) for z in accepted_candidates),
+            default=float("inf"),
+        )
+        rv = np.asarray(p[:3], dtype=np.float64)
+        R = cv2.Rodrigues(rv.reshape(3, 1))[0]
+        x = np.r_[
+            rv,
+            C_global,
+            p[6],
+            p[7],
+            p[8],
+            0.0,
+            0.0,
+        ]
+        converted.append({
+            "rim_x": float(RIM_XS[0]),
+            "x": x,
+            "cost": float(score),
+            "valid": True,
+            "floor_median_px": float(np.median([v["median_px"] for v in floor_m.values()])),
+            "floor_p95_px": floor_p95,
+            "target_line_p95_px": target_p95,
+            "rim_bbox_p95_px": rim_p95,
+            "R": R,
+            "C": C_global,
+            "K": K_matrix(float(np.exp(p[6])), float(p[7]), float(p[8])),
+            "dist": np.zeros(5, dtype=np.float64),
+            "center_source": "sealed_broadcast_v86_v87_v88",
+            "accepted_center_shift_cm": prior_shift,
+            "sealed_floor_metrics": floor_m,
+            "sealed_target_metrics": target_m,
+            "sealed_rim_p95_px": rim_p95,
+        })
+
+    converted.sort(key=lambda r: (
+        r["floor_p95_px"]
+        + r["target_line_p95_px"]
+        + r["rim_bbox_p95_px"]
+        + 0.001 * r["accepted_center_shift_cm"]
+    ))
+    best = converted[0]
+    if (
+        best["floor_p95_px"] > 2.5
+        or best["target_line_p95_px"] > 2.0
+        or best["rim_bbox_p95_px"] > 2.0
+        or best["accepted_center_shift_cm"] > 100.0
+    ):
+        raise RuntimeError(
+            "Broadcast: sealed metric-camera gate failed "
+            f"floor={best['floor_p95_px']:.2f}px "
+            f"target={best['target_line_p95_px']:.2f}px "
+            f"rim={best['rim_bbox_p95_px']:.2f}px "
+            f"center_shift={best['accepted_center_shift_cm']:.1f}cm"
+        )
+    return best, converted[:8]
+
+
 def solve_camera(
     label: str,
     court: dict,
     rim_box: np.ndarray,
     H_i2w_override: np.ndarray | None = None,
 ):
+    if label == "Broadcast":
+        return solve_broadcast_sealed_geometry()
+
     xy, cf = court["xy"], court["conf"]
     raw_sel = (cf >= 0.45) & (xy[:, 0] > 1) & (xy[:, 1] > 1)
     if int(raw_sel.sum()) < 6:
