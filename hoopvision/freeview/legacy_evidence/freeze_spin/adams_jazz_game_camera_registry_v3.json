@@ -1,0 +1,17 @@
+{
+  "schema_version":3,
+  "game_id":"0022500301",
+  "cameras":{
+    "Left Above Rim":{
+      "physical_camera_center_prior_cm":[1954.0944213029006,-20.657870280048282,370.3129555117168],
+      "event_cameras":{
+        "489":{
+          "rvec":[1.4954660063973284,1.5111487286290903,-1.0014091659360755],
+          "focal_px":761.1736548500572,
+          "principal_point_px":[458.5682796328589,467.3403567937311]
+        }
+      }
+    }
+  },
+  "provenance":"Copied from accepted v41/v42 registry in timeedmonds-maker/44; immutable camera evidence only."
+}
