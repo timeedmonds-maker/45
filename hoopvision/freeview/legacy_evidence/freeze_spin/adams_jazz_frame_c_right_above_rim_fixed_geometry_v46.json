@@ -1,0 +1,5 @@
+{
+  "game_id":"0022500301","event_id":489,"view":"Right Above Rim",
+  "rim_inner_edge_samples_px":[[461.0,253.0],[478.0,249.0],[496.0,250.0],[514.0,257.0],[527.0,272.0],[533.0,291.0],[532.0,311.0],[525.0,328.0],[511.0,339.0],[490.0,341.0],[469.0,337.0],[452.0,325.0],[444.0,309.0],[441.0,291.0],[445.0,272.0]],
+  "provenance":"Native 960x540 regulation rim observations from legacy v46; no player/ball evidence."
+}
