@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "game_id": "0022500301",
+  "event_id": 489,
+  "camera_label": "Broadcast",
+  "image": "A_Broadcast_9.194613s_frame0276.png",
+  "purpose": "Source-visible noncoplanar white-target stripe lines for a direct pinhole camera diagnostic. The orange rim is deliberately excluded and reserved as independent held-out 3D evidence.",
+  "annotation_policy": "Native 960x540 pixels only. Line samples were taken from local brightness/RGB ridges on the visible 2-inch white target stripe. No solver residual, cross-camera transfer, generated pixels, player or ball geometry was used.",
+  "observed_line_samples_px": {
+    "target_top": [[582,92],[583,92],[584,93],[585,93],[586,94],[587,94],[588,95],[589,96],[590,96],[591,97],[592,97],[593,97],[594,98]],
+    "target_left": [[581,96],[581,100],[581,104],[581,108],[581,112],[581,116]],
+    "target_right": [[595,102],[595,106],[595,110],[594,114],[594,118],[594,120]]
+  },
+  "metric_line_model": {
+    "board_plane_x_cm": 0.0,
+    "white_stripe_width_in": 2.0,
+    "outside_width_in": 24.0,
+    "outside_height_in": 18.0,
+    "centerline_width_in": 22.0,
+    "centerline_height_in": 16.0,
+    "centerline_half_width_in": 11.0,
+    "centerline_bottom_height_ft_plus_in": "10 ft + 1 in",
+    "centerline_top_height_ft_plus_in": "10 ft + 17 in",
+    "note": "The 2-inch stripe is represented by its centreline, exactly analogous to the v83 painted-court-line correction. The outer lower target edge is at ring-top height in the project NBA basket geometry; v87 does not use rim pixels in the fit."
+  },
+  "seed_only_corner_estimates_px": {
+    "note": "Approximate intersections used only to initialize PnP; excluded from all residuals and gates.",
+    "top_left": [581,92],
+    "top_right": [594,98],
+    "bottom_right": [594,124],
+    "bottom_left": [581,118]
+  },
+  "held_out_policy": "All orange-rim pixels and geometry are held out from v87. No rim observation is present in this file."
+}
