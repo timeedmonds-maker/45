@@ -1,0 +1,126 @@
+name: Adams v1.3 six-camera freeze swivel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [chatgpt/v13-six-camera-freeze-swivel]
+    paths:
+      - 'freeze_spin/**'
+      - 'nba_native_video/fetch_adams_event489_six_angles.py'
+      - '.github/workflows/adams-v13-six-camera-freeze-swivel.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  solve-render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONUNBUFFERED: '1'
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CV and free-view runtime
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg git
+          python -m pip install --upgrade pip wheel 'setuptools<82'
+          python -m pip install --quiet torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --quiet 'numpy<2' scipy opencv-python-headless ultralytics onnxruntime requests pillow huggingface_hub
+          python -m pip install --quiet git+https://github.com/microsoft/MoGe.git
+          git clone -q https://github.com/ortizeg/object-detection-eval.git /tmp/object-detection-eval
+          git -C /tmp/object-detection-eval checkout -q bcf6279073af042c3a5084a041f6c5d8e71e6af1
+          python -m pip install --quiet -e /tmp/object-detection-eval
+          python -m py_compile \
+            freeze_spin/v13_camera.py \
+            freeze_spin/v13_sync.py \
+            freeze_spin/v13_render.py \
+            freeze_spin/run_v13_six_camera_freeze_swivel.py \
+            nba_native_video/fetch_adams_event489_six_angles.py
+
+      - name: Download frozen HoopVision v1.3 perception assets
+        run: |
+          set -euxo pipefail
+          mkdir -p models
+          curl -L --fail --retry 3 -o models/rfdetr_m_640.onnx \
+            https://huggingface.co/ortizeg/basketball-rf-detr-m-640/resolve/main/rfdetr_m_640.onnx
+          echo '708789b50c42b5265cced64276a8beb1b7f294d324f954d359fd8a2d01f5a939  models/rfdetr_m_640.onnx' | sha256sum -c -
+          curl -L --fail --retry 3 -o models/court_yolo11m_pose.pt \
+            https://huggingface.co/AnzeZ/basketball-court-yolo11m-pose/resolve/main/best.pt
+
+      - name: Reacquire official six-view event 489 fixture
+        run: |
+          set -euxo pipefail
+          rm -rf v13_source
+          python nba_native_video/fetch_adams_event489_six_angles.py \
+            --game-id 0022500301 \
+            --event-num 489 \
+            --out v13_source
+          ls -lh v13_source/*_SOURCE.mp4
+
+      - name: Solve six cameras and render freeze swivel
+        run: |
+          set -euxo pipefail
+          rm -rf v13_out
+          python -u -m freeze_spin.run_v13_six_camera_freeze_swivel \
+            --clips-dir v13_source \
+            --detector-onnx models/rfdetr_m_640.onnx \
+            --object-eval-src /tmp/object-detection-eval/src \
+            --court-model models/court_yolo11m_pose.pt \
+            --out v13_out \
+            --max-degree 25 \
+            --orbit-frames 61 \
+            --tokens 1000
+
+      - name: Verify UHD result
+        run: |
+          set -euxo pipefail
+          test -s v13_out/adams_dunk_v13_six_camera_freeze_swivel_UHD.mp4
+          test -s v13_out/v13_six_camera_freeze_swivel_report.json
+          ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width,height,r_frame_rate,nb_frames,codec_name \
+            -show_entries format=duration,size \
+            -of json v13_out/adams_dunk_v13_six_camera_freeze_swivel_UHD.mp4 \
+            | tee v13_out/final_probe.json
+          python - <<'PY'
+          import json
+          p=json.load(open('v13_out/final_probe.json'))
+          s=p['streams'][0]
+          assert int(s['width']) == 3840 and int(s['height']) == 2160, s
+          q=json.load(open('v13_out/v13_six_camera_freeze_swivel_report.json'))
+          assert q['status'] == 'V13_SIX_CAMERA_FREEZE_SWIVEL_RENDERED', q['status']
+          assert q['camera_count'] == 6, q['camera_count']
+          print(json.dumps({
+              'status':q['status'],
+              'offsets':q['exact_state']['offsets'],
+              'floor_p95_px':{k:round(v['floor_p95_px'],2) for k,v in q['cameras'].items()},
+              'uhd':[s['width'],s['height']],
+          },indent=2))
+          PY
+
+      - name: Upload UHD proof and QA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: adams-v13-six-camera-freeze-swivel
+          path: |
+            v13_out/adams_dunk_v13_six_camera_freeze_swivel_UHD.mp4
+            v13_out/adams_dunk_v13_six_camera_freeze_swivel_native.mp4
+            v13_out/v13_six_camera_freeze_swivel_report.json
+            v13_out/final_probe.json
+            v13_out/camera_qa_*.png
+            v13_out/exact_*.png
+            v13_out/depth_*.png
+            v13_source/manifest.json
+          retention-days: 7
+          if-no-files-found: warn
+          compression-level: 0
