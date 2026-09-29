@@ -426,42 +426,77 @@ def homography_manifold_roots(
             })
     return rows
 
-def solve_camera(label: str, court: dict, rim_box: np.ndarray):
+def solve_camera(
+    label: str,
+    court: dict,
+    rim_box: np.ndarray,
+    H_i2w_override: np.ndarray | None = None,
+):
     xy, cf = court["xy"], court["conf"]
     raw_sel = (cf >= 0.45) & (xy[:, 0] > 1) & (xy[:, 1] > 1)
     if int(raw_sel.sum()) < 6:
         raise RuntimeError(f"{label}: only {int(raw_sel.sum())} reliable v1.3 court landmarks")
 
-    # Reuse the frozen v1.3 RANSAC principle before asking a 3-D camera to
-    # explain the observations. A single bad semantic landmark can otherwise
-    # drag a physically valid camera hundreds of pixels away.
-    src = xy[raw_sel].astype(np.float64)
-    dst = COURT_VERTICES[raw_sel].astype(np.float64)
-    H_i2w, inlier = cv2.findHomography(src, dst, cv2.RANSAC, 10.0)
-    if H_i2w is None or inlier is None:
-        raise RuntimeError(f"{label}: v1.3 court RANSAC failed")
-    keep_local = inlier.ravel().astype(bool)
-    raw_ids = np.where(raw_sel)[0]
-    keep_ids = raw_ids[keep_local]
-    if len(keep_ids) < 6:
-        raise RuntimeError(f"{label}: only {len(keep_ids)} v1.3 court RANSAC inliers")
+    sel = raw_sel.copy()
 
-    sel = np.zeros(len(xy), dtype=bool)
-    sel[keep_ids] = True
-    floor_world = np.column_stack([
-        COURT_VERTICES[sel],
-        np.zeros(int(sel.sum())),
-    ]).astype(np.float64)
-    floor_image = xy[sel].astype(np.float64)
-    H_w2i, _ = cv2.findHomography(
-        COURT_VERTICES[sel].astype(np.float64),
-        floor_image.astype(np.float64),
-        0,
-    )
-    if H_w2i is None:
-        raise RuntimeError(f"{label}: v1.3 world-to-image homography failed")
-    H_w2i = H_w2i / H_w2i[2,2]
-    seeds = homography_seeds(COURT_VERTICES[sel], floor_image)
+    if H_i2w_override is not None:
+        # The frozen v1.3 calibrator is authoritative for the floor plane.  Do
+        # not re-fit that accepted homography from one noisy freeze frame.
+        # Instead sample the accepted metric plane and ask the 3-D solver only
+        # to recover a physical camera that reproduces it while also explaining
+        # the non-coplanar regulation rim.
+        H_i2w = np.asarray(H_i2w_override, dtype=np.float64).reshape(3, 3)
+        H_w2i = np.linalg.inv(H_i2w)
+        H_w2i = H_w2i / H_w2i[2, 2]
+        projected = cv2.perspectiveTransform(
+            COURT_VERTICES.astype(np.float64).reshape(-1, 1, 2),
+            H_w2i,
+        ).reshape(-1, 2)
+        visible = (
+            np.isfinite(projected).all(axis=1)
+            & (projected[:, 0] >= -40.0)
+            & (projected[:, 0] <= W + 40.0)
+            & (projected[:, 1] >= -40.0)
+            & (projected[:, 1] <= H + 40.0)
+        )
+        if int(visible.sum()) < 6:
+            raise RuntimeError(
+                f"{label}: frozen v1.3 homography exposes only "
+                f"{int(visible.sum())} usable metric court anchors"
+            )
+        seed_world_xy = COURT_VERTICES[visible].astype(np.float64)
+        floor_image = projected[visible].astype(np.float64)
+        floor_world = np.column_stack([
+            seed_world_xy,
+            np.zeros(int(visible.sum())),
+        ]).astype(np.float64)
+        seeds = homography_seeds(seed_world_xy, floor_image)
+    else:
+        # Diagnostic fallback for callers without a frozen v1.3 homography.
+        src = xy[raw_sel].astype(np.float64)
+        dst = COURT_VERTICES[raw_sel].astype(np.float64)
+        H_i2w, inlier = cv2.findHomography(src, dst, cv2.RANSAC, 10.0)
+        if H_i2w is None or inlier is None:
+            raise RuntimeError(f"{label}: v1.3 court RANSAC failed")
+        keep_local = inlier.ravel().astype(bool)
+        raw_ids = np.where(raw_sel)[0]
+        keep_ids = raw_ids[keep_local]
+        if len(keep_ids) < 6:
+            raise RuntimeError(f"{label}: only {len(keep_ids)} v1.3 court RANSAC inliers")
+        sel = np.zeros(len(xy), dtype=bool)
+        sel[keep_ids] = True
+        seed_world_xy = COURT_VERTICES[sel].astype(np.float64)
+        floor_world = np.column_stack([
+            seed_world_xy,
+            np.zeros(int(sel.sum())),
+        ]).astype(np.float64)
+        floor_image = xy[sel].astype(np.float64)
+        H_w2i, _ = cv2.findHomography(seed_world_xy, floor_image, 0)
+        if H_w2i is None:
+            raise RuntimeError(f"{label}: v1.3 world-to-image homography failed")
+        H_w2i = H_w2i / H_w2i[2, 2]
+        seeds = homography_seeds(seed_world_xy, floor_image)
+
     if not seeds:
         raise RuntimeError(f"{label}: could not seed projective camera from v1.3 court")
 
