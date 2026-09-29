@@ -310,6 +310,122 @@ def _camera_residual(
     return np.concatenate(rows)
 
 
+
+def decompose_homography_state(
+    H_w2i: np.ndarray,
+    logf: float,
+    cx: float,
+    cy: float,
+    sign: float,
+) -> tuple[np.ndarray, dict]:
+    f = math.exp(float(logf))
+    K = K_matrix(f, float(cx), float(cy))
+    A = np.linalg.inv(K) @ (float(sign) * H_w2i)
+    a1, a2, a3 = A[:, 0], A[:, 1], A[:, 2]
+    scale = 2.0 / max(np.linalg.norm(a1) + np.linalg.norm(a2), 1e-12)
+    r1 = scale * a1
+    r2 = scale * a2
+    t = scale * a3
+    r3 = np.cross(r1, r2)
+    R0 = np.column_stack([r1, r2, r3])
+    u, _, vt = np.linalg.svd(R0)
+    R = u @ vt
+    if np.linalg.det(R) < 0:
+        u[:, -1] *= -1
+        R = u @ vt
+    C = -R.T @ t
+    rv, _ = cv2.Rodrigues(R)
+    x = np.r_[rv.ravel(), C, float(logf), float(cx), float(cy), 0.0, 0.0]
+    qa = {
+        "orthogonality": float(np.dot(r1, r2)),
+        "norm_delta": float(np.linalg.norm(r1) - np.linalg.norm(r2)),
+        "scale": float(scale),
+    }
+    return x, qa
+
+
+def homography_manifold_roots(
+    H_w2i: np.ndarray,
+    floor_world: np.ndarray,
+    floor_image: np.ndarray,
+    rim_box: np.ndarray,
+    rim_x: float,
+) -> list[dict]:
+    qlo = np.asarray([math.log(140.0), -500.0, -500.0], dtype=np.float64)
+    qhi = np.asarray([math.log(9000.0), 1460.0, 1040.0], dtype=np.float64)
+    starts = []
+    for f0 in (300.0, 500.0, 800.0, 1200.0, 2000.0, 3500.0):
+        for dx, dy in ((0,0), (-160,0), (160,0), (0,-120), (0,120)):
+            starts.append(np.asarray([math.log(f0), W/2.0+dx, H/2.0+dy], dtype=np.float64))
+
+    rows = []
+    for sign in (1.0, -1.0):
+        def residual(q):
+            x, hqa = decompose_homography_state(H_w2i, q[0], q[1], q[2], sign)
+            uv, z, _, _ = project_points(x, floor_world)
+            ru, rz, _, _ = project_points(x, rim_world(rim_x, 360))
+            if not np.isfinite(uv).all() or not np.isfinite(ru).all():
+                return np.full(floor_world.shape[0]*2 + 12, 1e4, dtype=np.float64)
+            pred_box = np.asarray([
+                ru[:,0].min(), ru[:,1].min(), ru[:,0].max(), ru[:,1].max()
+            ], dtype=np.float64)
+            C = x[3:6]
+            return np.r_[
+                ((uv-floor_image)/1.5).ravel(),
+                (pred_box-rim_box)/1.5,
+                25.0*hqa["orthogonality"],
+                25.0*hqa["norm_delta"],
+                max(0.0, 20.0-float(np.percentile(z,10)))/4.0,
+                max(0.0, 20.0-float(np.percentile(rz,10)))/4.0,
+                max(0.0, 100.0-float(C[2]))/30.0,
+                max(0.0, float(C[2])-9000.0)/300.0,
+                (q[1]-W/2.0)/450.0,
+                (q[2]-H/2.0)/350.0,
+            ]
+
+        for q0 in starts:
+            try:
+                fit=least_squares(
+                    residual,
+                    np.minimum(np.maximum(q0,qlo+1e-7),qhi-1e-7),
+                    bounds=(qlo,qhi),
+                    loss="soft_l1",
+                    f_scale=1.0,
+                    x_scale="jac",
+                    max_nfev=800,
+                )
+            except Exception:
+                continue
+            x,hqa=decompose_homography_state(H_w2i,fit.x[0],fit.x[1],fit.x[2],sign)
+            uv,z,R,_=project_points(x,floor_world)
+            ru,rz,_,_=project_points(x,rim_world(rim_x,720))
+            floor_e=np.linalg.norm(uv-floor_image,axis=1)
+            pred_box=np.asarray([ru[:,0].min(),ru[:,1].min(),ru[:,0].max(),ru[:,1].max()])
+            rim_e=np.abs(pred_box-rim_box)
+            C=x[3:6]
+            valid=bool(
+                np.isfinite(C).all()
+                and np.percentile(z,10)>10
+                and np.percentile(rz,10)>10
+                and 100<C[2]<9000
+            )
+            rows.append({
+                "rim_x":float(rim_x),
+                "x":x.copy(),
+                "cost":float(fit.cost),
+                "valid":valid,
+                "floor_median_px":float(np.median(floor_e)),
+                "floor_p95_px":float(np.percentile(floor_e,95)),
+                "rim_bbox_p95_px":float(np.percentile(rim_e,95)),
+                "R":R.copy(),
+                "C":C.copy(),
+                "K":K_matrix(math.exp(x[6]),x[7],x[8]),
+                "dist":np.zeros(5,dtype=np.float64),
+                "center_source":"homography_manifold_full_rim",
+                "homography_qa":hqa,
+            })
+    return rows
+
 def solve_camera(label: str, court: dict, rim_box: np.ndarray):
     xy, cf = court["xy"], court["conf"]
     raw_sel = (cf >= 0.45) & (xy[:, 0] > 1) & (xy[:, 1] > 1)
@@ -337,6 +453,14 @@ def solve_camera(label: str, court: dict, rim_box: np.ndarray):
         np.zeros(int(sel.sum())),
     ]).astype(np.float64)
     floor_image = xy[sel].astype(np.float64)
+    H_w2i, _ = cv2.findHomography(
+        COURT_VERTICES[sel].astype(np.float64),
+        floor_image.astype(np.float64),
+        0,
+    )
+    if H_w2i is None:
+        raise RuntimeError(f"{label}: v1.3 world-to-image homography failed")
+    H_w2i = H_w2i / H_w2i[2,2]
     seeds = homography_seeds(COURT_VERTICES[sel], floor_image)
     if not seeds:
         raise RuntimeError(f"{label}: could not seed projective camera from v1.3 court")
@@ -361,6 +485,20 @@ def solve_camera(label: str, court: dict, rim_box: np.ndarray):
     ]
 
     roots = []
+
+    # The primary solver lives on the exact court-homography manifold: the
+    # planar v1.3 solution supplies the projective state, while the regulation
+    # 3-D rim selects the remaining intrinsic/gauge degree of freedom. This is
+    # substantially better conditioned than allowing R,t,K to drift
+    # independently while trying to preserve the same plane.
+    for rim_x in RIM_XS:
+        for row in homography_manifold_roots(
+            H_w2i, floor_world, floor_image, rim_box, rim_x
+        ):
+            row["visible_landmarks"] = int(sel.sum())
+            row["raw_visible_landmarks"] = int(raw_sel.sum())
+            row["court_ransac_inliers"] = int(sel.sum())
+            roots.append(row)
 
     # For the three cameras already proved metrically in the earlier Adams/Jazz
     # work, do not throw away that evidence. Lock only the physical optical
@@ -482,6 +620,7 @@ def solve_camera(label: str, court: dict, rim_box: np.ndarray):
 
     roots.sort(key=lambda r: (
         r["floor_p95_px"] + 0.70 * r["rim_bbox_p95_px"],
+        0 if r.get("center_source") == "accepted_game_metric_center" else 1,
         r["cost"],
     ))
     best = roots[0]
