@@ -355,3 +355,4 @@ if __name__ == "__main__":
     main()
 
 # Runner trigger: public Actions execute the frozen v1.3 downstream proof.
+# Re-triggered from ChatGPT on 2026-09-30 to use the public HoopVision runner.
